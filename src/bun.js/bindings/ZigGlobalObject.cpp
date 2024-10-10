@@ -147,8 +147,10 @@
 #include "Base64Helpers.h"
 #include "wtf/text/OrdinalNumber.h"
 #include "ErrorCode.h"
-#include "v8/V8GlobalInternals.h"
+#include "v8/shim/GlobalInternals.h"
 #include "EventLoopTask.h"
+#include "NodeModuleModule.h"
+#include <JavaScriptCore/JSCBytecodeCacheVersion.h>
 
 #if ENABLE(REMOTE_INSPECTOR)
 #include "JavaScriptCore/RemoteInspectorServer.h"
@@ -191,6 +193,27 @@ static bool has_loaded_jsc = false;
 Structure* createMemoryFootprintStructure(JSC::VM& vm, JSC::JSGlobalObject* globalObject);
 
 extern "C" WebCore::Worker* WebWorker__getParentWorker(void*);
+
+#ifndef BUN_WEBKIT_VERSION
+#ifndef ASSERT_ENABLED
+#warning "BUN_WEBKIT_VERSION is not defined. WebKit's cmakeconfig.h is supposed to define that. If you're building a release build locally, ignore this warning. If you're seeing this warning in CI, please file an issue."
+#endif
+
+#define WEBKIT_BYTECODE_CACHE_HASH_KEY __TIMESTAMP__
+#else
+#define WEBKIT_BYTECODE_CACHE_HASH_KEY BUN_WEBKIT_VERSION
+#endif
+static consteval unsigned getWebKitBytecodeCacheVersion()
+{
+    return WTF::SuperFastHash::computeHash(WEBKIT_BYTECODE_CACHE_HASH_KEY);
+}
+#undef WEBKIT_BYTECODE_CACHE_HASH_KEY
+
+extern "C" unsigned getJSCBytecodeCacheVersion()
+{
+    return getWebKitBytecodeCacheVersion();
+}
+
 extern "C" void JSCInitialize(const char* envp[], size_t envc, void (*onCrash)(const char* ptr, size_t length), bool evalMode)
 {
     // NOLINTBEGIN
@@ -222,6 +245,8 @@ extern "C" void JSCInitialize(const char* envp[], size_t envc, void (*onCrash)(c
         JSC::Options::evalMode() = evalMode;
         JSC::Options::usePromiseTryMethod() = true;
         JSC::Options::useRegExpEscape() = true;
+        JSC::Options::useIteratorHelpers() = true;
+        JSC::dangerouslyOverrideJSCBytecodeCacheVersion(getWebKitBytecodeCacheVersion());
 
 #ifdef BUN_DEBUG
         JSC::Options::showPrivateScriptsInStackTraces() = true;
@@ -2662,6 +2687,8 @@ void GlobalObject::finishCreation(VM& vm)
 
     m_commonStrings.initialize();
 
+    Bun::addNodeModuleConstructorProperties(vm, this);
+
     m_JSDOMFileConstructor.initLater(
         [](const Initializer<JSObject>& init) {
             JSObject* fileConstructor = Bun::createJSDOMFileConstructor(init.vm, init.owner);
@@ -2726,11 +2753,11 @@ void GlobalObject::finishCreation(VM& vm)
         });
 
     m_V8GlobalInternals.initLater(
-        [](const JSC::LazyProperty<JSC::JSGlobalObject, v8::GlobalInternals>::Initializer& init) {
+        [](const JSC::LazyProperty<JSC::JSGlobalObject, v8::shim::GlobalInternals>::Initializer& init) {
             init.set(
-                v8::GlobalInternals::create(
+                v8::shim::GlobalInternals::create(
                     init.vm,
-                    v8::GlobalInternals::createStructure(init.vm, init.owner),
+                    v8::shim::GlobalInternals::createStructure(init.vm, init.owner),
                     jsDynamicCast<Zig::GlobalObject*>(init.owner)));
         });
 
@@ -3579,7 +3606,6 @@ void GlobalObject::visitChildrenImpl(JSCell* cell, Visitor& visitor)
     visitor.append(thisObject->m_readableStreamToJSON);
     visitor.append(thisObject->m_readableStreamToText);
     visitor.append(thisObject->m_readableStreamToFormData);
-    visitor.append(thisObject->m_nodeModuleOverriddenResolveFilename);
 
     visitor.append(thisObject->m_nextTickQueue);
     visitor.append(thisObject->m_errorConstructorPrepareStackTraceValue);
@@ -3589,6 +3615,8 @@ void GlobalObject::visitChildrenImpl(JSCell* cell, Visitor& visitor)
 
     visitor.append(thisObject->m_currentNapiHandleScopeImpl);
 
+    thisObject->m_moduleResolveFilenameFunction.visit(visitor);
+    thisObject->m_nodeModuleConstructor.visit(visitor);
     thisObject->m_asyncBoundFunctionStructure.visit(visitor);
     thisObject->m_bunObject.visit(visitor);
     thisObject->m_cachedNodeVMGlobalObjectStructure.visit(visitor);
@@ -3942,7 +3970,8 @@ JSC::JSInternalPromise* GlobalObject::moduleLoaderImportModule(JSGlobalObject* j
     ASSERT(startRefCount == moduleName.impl()->refCount());
     if (!resolved.success) {
         throwException(scope, resolved.result.err, globalObject);
-        return JSC::JSInternalPromise::rejectedPromiseWithCaughtException(globalObject, scope);
+        auto* promise = JSC::JSInternalPromise::create(vm, globalObject->internalPromiseStructure());
+        return promise->rejectWithCaughtException(globalObject, scope);
     }
 
     JSC::Identifier resolvedIdentifier;
