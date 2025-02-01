@@ -25,6 +25,7 @@ const File = bun.sys.File;
 const JSLexer = bun.js_lexer;
 const logger = bun.logger;
 const OOM = bun.OOM;
+const FD = bun.FD;
 
 const js_parser = bun.js_parser;
 const JSON = bun.JSON;
@@ -44,7 +45,7 @@ const which = @import("../which.zig").which;
 const Run = @import("../bun_js.zig").Run;
 const Fs = @import("../fs.zig");
 const FileSystem = Fs.FileSystem;
-const Lock = @import("../lock.zig").Lock;
+const Lock = bun.Mutex;
 const URL = @import("../url.zig").URL;
 const HTTP = bun.http;
 const AsyncHTTP = HTTP.AsyncHTTP;
@@ -57,7 +58,7 @@ const clap = bun.clap;
 const ExtractTarball = @import("./extract_tarball.zig");
 pub const Npm = @import("./npm.zig");
 const Bitset = bun.bit_set.DynamicBitSetUnmanaged;
-const z_allocator = @import("../memory_allocator.zig").z_allocator;
+const z_allocator = @import("../allocators/memory_allocator.zig").z_allocator;
 const Syscall = bun.sys;
 const RunCommand = @import("../cli/run_command.zig").RunCommand;
 const PackageManagerCommand = @import("../cli/package_manager_command.zig").PackageManagerCommand;
@@ -65,6 +66,7 @@ threadlocal var initialized_store = false;
 const Futex = @import("../futex.zig");
 
 pub const Lockfile = @import("./lockfile.zig");
+pub const TextLockfile = @import("./bun.lock.zig");
 pub const PatchedDep = Lockfile.PatchedDep;
 const Walker = @import("../walker_skippable.zig");
 
@@ -713,7 +715,7 @@ pub const Task = struct {
                     if (pt.callback.apply.logger.errors > 0) {
                         defer pt.callback.apply.logger.deinit();
                         // this.log.addErrorFmt(null, logger.Loc.Empty, bun.default_allocator, "failed to apply patch: {}", .{e}) catch unreachable;
-                        pt.callback.apply.logger.print(Output.writer()) catch {};
+                        pt.callback.apply.logger.print(Output.errorWriter()) catch {};
                     }
                 }
             }
@@ -1317,6 +1319,7 @@ pub fn NewPackageInstall(comptime kind: PkgInstallKind) type {
             fail: struct {
                 err: anyerror,
                 step: Step,
+                debug_trace: if (Environment.isDebug) bun.crash_handler.StoredTrace else void,
 
                 pub inline fn isPackageMissingFromCache(this: @This()) bool {
                     return (this.err == error.FileNotFound or this.err == error.ENOENT) and this.step == .opening_cache_dir;
@@ -1327,11 +1330,16 @@ pub fn NewPackageInstall(comptime kind: PkgInstallKind) type {
                 return .{ .success = {} };
             }
 
-            pub inline fn fail(err: anyerror, step: Step) Result {
+            pub inline fn fail(err: anyerror, step: Step, trace: ?*std.builtin.StackTrace) Result {
                 return .{
                     .fail = .{
                         .err = err,
                         .step = step,
+                        .debug_trace = if (Environment.isDebug)
+                            if (trace) |t|
+                                bun.crash_handler.StoredTrace.from(t)
+                            else
+                                bun.crash_handler.StoredTrace.capture(@returnAddress()),
                     },
                 };
             }
@@ -1358,6 +1366,7 @@ pub fn NewPackageInstall(comptime kind: PkgInstallKind) type {
             linking_dependency,
             patching,
 
+            /// "error: failed {s} for package"
             pub fn name(this: Step) []const u8 {
                 return switch (this) {
                     .copyfile, .copying_files => "copying files from cache to destination",
@@ -1376,18 +1385,14 @@ pub fn NewPackageInstall(comptime kind: PkgInstallKind) type {
             Method.hardlink;
 
         fn installWithClonefileEachDir(this: *@This(), destination_dir: std.fs.Dir) !Result {
-            var cached_package_dir = bun.openDir(this.cache_dir, this.cache_dir_subpath) catch |err| return Result{
-                .fail = .{ .err = err, .step = .opening_cache_dir },
-            };
+            var cached_package_dir = bun.openDir(this.cache_dir, this.cache_dir_subpath) catch |err| return Result.fail(err, .opening_cache_dir, @errorReturnTrace());
             defer cached_package_dir.close();
             var walker_ = Walker.walk(
                 cached_package_dir,
                 this.allocator,
                 &[_]bun.OSPathSlice{},
                 &[_]bun.OSPathSlice{},
-            ) catch |err| return Result{
-                .fail = .{ .err = err, .step = .opening_cache_dir },
-            };
+            ) catch |err| return Result.fail(err, .opening_cache_dir, @errorReturnTrace());
             defer walker_.deinit();
 
             const FileCopier = struct {
@@ -1436,22 +1441,15 @@ pub fn NewPackageInstall(comptime kind: PkgInstallKind) type {
                 }
             };
 
-            var subdir = destination_dir.makeOpenPath(bun.span(this.destination_dir_subpath), .{}) catch |err| return Result{
-                .fail = .{ .err = err, .step = .opening_dest_dir },
-            };
-
+            var subdir = destination_dir.makeOpenPath(bun.span(this.destination_dir_subpath), .{}) catch |err| return Result.fail(err, .opening_dest_dir, @errorReturnTrace());
             defer subdir.close();
 
             this.file_count = FileCopier.copy(
                 subdir,
                 &walker_,
-            ) catch |err| return Result{
-                .fail = .{ .err = err, .step = .copying_files },
-            };
+            ) catch |err| return Result.fail(err, .copying_files, @errorReturnTrace());
 
-            return Result{
-                .success = {},
-            };
+            return .{ .success = {} };
         }
 
         // https://www.unix.com/man-page/mojave/2/fclonefileat/
@@ -1494,10 +1492,10 @@ pub fn NewPackageInstall(comptime kind: PkgInstallKind) type {
             cached_package_dir: std.fs.Dir = undefined,
             walker: Walker = undefined,
             subdir: std.fs.Dir = if (Environment.isWindows) std.fs.Dir{ .fd = std.os.windows.INVALID_HANDLE_VALUE } else undefined,
-            buf: bun.windows.WPathBuffer = if (Environment.isWindows) undefined else {},
-            buf2: bun.windows.WPathBuffer = if (Environment.isWindows) undefined else {},
-            to_copy_buf: if (Environment.isWindows) []u16 else void = if (Environment.isWindows) undefined else {},
-            to_copy_buf2: if (Environment.isWindows) []u16 else void = if (Environment.isWindows) undefined else {},
+            buf: bun.windows.WPathBuffer = if (Environment.isWindows) undefined,
+            buf2: bun.windows.WPathBuffer = if (Environment.isWindows) undefined,
+            to_copy_buf: if (Environment.isWindows) []u16 else void = if (Environment.isWindows) undefined,
+            to_copy_buf2: if (Environment.isWindows) []u16 else void = if (Environment.isWindows) undefined,
 
             pub fn deinit(this: *@This()) void {
                 if (!Environment.isWindows) {
@@ -1520,7 +1518,8 @@ pub fn NewPackageInstall(comptime kind: PkgInstallKind) type {
                 else
                     bun.openDir(this.cache_dir, this.cache_dir_subpath)
             else
-                bun.openDir(this.cache_dir, this.cache_dir_subpath)) catch |err| return Result.fail(err, .opening_cache_dir);
+                bun.openDir(this.cache_dir, this.cache_dir_subpath)) catch |err|
+                return Result.fail(err, .opening_cache_dir, @errorReturnTrace());
 
             state.walker = Walker.walk(
                 state.cached_package_dir,
@@ -1539,7 +1538,7 @@ pub fn NewPackageInstall(comptime kind: PkgInstallKind) type {
                 }) catch |err| {
                     state.cached_package_dir.close();
                     state.walker.deinit();
-                    return Result.fail(err, .opening_dest_dir);
+                    return Result.fail(err, .opening_dest_dir, @errorReturnTrace());
                 };
                 return Result.success();
             }
@@ -1550,7 +1549,7 @@ pub fn NewPackageInstall(comptime kind: PkgInstallKind) type {
                 const err = if (e.toSystemErrno()) |sys_err| bun.errnoToZigErr(sys_err) else error.Unexpected;
                 state.cached_package_dir.close();
                 state.walker.deinit();
-                return Result.fail(err, .opening_dest_dir);
+                return Result.fail(err, .opening_dest_dir, null);
             }
 
             var i: usize = dest_path_length;
@@ -1565,11 +1564,7 @@ pub fn NewPackageInstall(comptime kind: PkgInstallKind) type {
             state.buf[i] = 0;
             const fullpath = state.buf[0..i :0];
 
-            _ = node_fs_for_package_installer.mkdirRecursiveOSPathImpl(void, {}, fullpath, 0, false).unwrap() catch |err| {
-                state.cached_package_dir.close();
-                state.walker.deinit();
-                return Result.fail(err, .copying_files);
-            };
+            _ = node_fs_for_package_installer.mkdirRecursiveOSPathImpl(void, {}, fullpath, 0, false);
             state.to_copy_buf = state.buf[fullpath.len..];
 
             const cache_path_length = bun.windows.kernel32.GetFinalPathNameByHandleW(state.cached_package_dir.fd, &state.buf2, state.buf2.len, 0);
@@ -1578,7 +1573,7 @@ pub fn NewPackageInstall(comptime kind: PkgInstallKind) type {
                 const err = if (e.toSystemErrno()) |sys_err| bun.errnoToZigErr(sys_err) else error.Unexpected;
                 state.cached_package_dir.close();
                 state.walker.deinit();
-                return Result.fail(err, .copying_files);
+                return Result.fail(err, .copying_files, null);
             }
             const cache_path = state.buf2[0..cache_path_length];
             var to_copy_buf2: []u16 = undefined;
@@ -1718,7 +1713,7 @@ pub fn NewPackageInstall(comptime kind: PkgInstallKind) type {
                 if (Environment.isWindows) &state.buf else void{},
                 if (Environment.isWindows) state.to_copy_buf2 else void{},
                 if (Environment.isWindows) &state.buf2 else void{},
-            ) catch |err| return Result.fail(err, .copying_files);
+            ) catch |err| return Result.fail(err, .copying_files, @errorReturnTrace());
 
             return Result.success();
         }
@@ -1888,7 +1883,7 @@ pub fn NewPackageInstall(comptime kind: PkgInstallKind) type {
                     head2: if (Environment.isWindows) []u16 else void,
                 ) !u32 {
                     var real_file_count: u32 = 0;
-                    var queue = if (Environment.isWindows) HardLinkWindowsInstallTask.getQueue() else {};
+                    var queue = if (Environment.isWindows) HardLinkWindowsInstallTask.getQueue();
 
                     while (try walker.next()) |entry| {
                         if (comptime Environment.isPosix) {
@@ -1959,12 +1954,13 @@ pub fn NewPackageInstall(comptime kind: PkgInstallKind) type {
 
                 if (comptime Environment.isWindows) {
                     if (err == error.FailedToCopyFile) {
-                        return Result.fail(err, .copying_files);
+                        return Result.fail(err, .copying_files, @errorReturnTrace());
                     }
                 } else if (err == error.NotSameFileSystem or err == error.ENXIO) {
                     return err;
                 }
-                return Result.fail(err, .copying_files);
+
+                return Result.fail(err, .copying_files, @errorReturnTrace());
             };
 
             return Result.success();
@@ -2099,12 +2095,12 @@ pub fn NewPackageInstall(comptime kind: PkgInstallKind) type {
             ) catch |err| {
                 if (comptime Environment.isWindows) {
                     if (err == error.FailedToCopyFile) {
-                        return Result.fail(err, .copying_files);
+                        return Result.fail(err, .copying_files, @errorReturnTrace());
                     }
                 } else if (err == error.NotSameFileSystem or err == error.ENXIO) {
                     return err;
                 }
-                return Result.fail(err, .copying_files);
+                return Result.fail(err, .copying_files, @errorReturnTrace());
             };
 
             return Result.success();
@@ -2260,7 +2256,8 @@ pub fn NewPackageInstall(comptime kind: PkgInstallKind) type {
             // cache_dir_subpath in here is actually the full path to the symlink pointing to the linked package
             const symlinked_path = this.cache_dir_subpath;
             var to_buf: bun.PathBuffer = undefined;
-            const to_path = this.cache_dir.realpath(symlinked_path, &to_buf) catch |err| return Result.fail(err, .linking_dependency);
+            const to_path = this.cache_dir.realpath(symlinked_path, &to_buf) catch |err|
+                return Result.fail(err, .linking_dependency, @errorReturnTrace());
 
             const dest = std.fs.path.basename(dest_path);
             // When we're linking on Windows, we want to avoid keeping the source directory handle open
@@ -2270,7 +2267,7 @@ pub fn NewPackageInstall(comptime kind: PkgInstallKind) type {
                 if (dest_path_length == 0) {
                     const e = bun.windows.Win32Error.get();
                     const err = if (e.toSystemErrno()) |sys_err| bun.errnoToZigErr(sys_err) else error.Unexpected;
-                    return Result.fail(err, .linking_dependency);
+                    return Result.fail(err, .linking_dependency, null);
                 }
 
                 var i: usize = dest_path_length;
@@ -2286,9 +2283,7 @@ pub fn NewPackageInstall(comptime kind: PkgInstallKind) type {
                     wbuf[i] = 0;
                     const fullpath = wbuf[0..i :0];
 
-                    _ = node_fs_for_package_installer.mkdirRecursiveOSPathImpl(void, {}, fullpath, 0, false).unwrap() catch |err| {
-                        return Result.fail(err, .linking_dependency);
-                    };
+                    _ = node_fs_for_package_installer.mkdirRecursiveOSPathImpl(void, {}, fullpath, 0, false);
                 }
 
                 const res = strings.copyUTF16IntoUTF8(dest_buf[0..], []const u16, wbuf[0..i], true);
@@ -2319,25 +2314,25 @@ pub fn NewPackageInstall(comptime kind: PkgInstallKind) type {
                             }
                         }
 
-                        return Result.fail(bun.errnoToZigErr(err.errno), .linking_dependency);
+                        return Result.fail(bun.errnoToZigErr(err.errno), .linking_dependency, null);
                     },
                     .result => {},
                 }
             } else {
                 var dest_dir = if (subdir) |dir| brk: {
-                    break :brk bun.MakePath.makeOpenPath(destination_dir, dir, .{}) catch |err| return Result.fail(err, .linking_dependency);
+                    break :brk bun.MakePath.makeOpenPath(destination_dir, dir, .{}) catch |err| return Result.fail(err, .linking_dependency, @errorReturnTrace());
                 } else destination_dir;
                 defer {
                     if (subdir != null) dest_dir.close();
                 }
 
-                const dest_dir_path = bun.getFdPath(dest_dir.fd, &dest_buf) catch |err| return Result.fail(err, .linking_dependency);
+                const dest_dir_path = bun.getFdPath(dest_dir.fd, &dest_buf) catch |err| return Result.fail(err, .linking_dependency, @errorReturnTrace());
 
                 const target = Path.relative(dest_dir_path, to_path);
-                std.posix.symlinkat(target, dest_dir.fd, dest) catch |err| return Result.fail(err, .linking_dependency);
+                std.posix.symlinkat(target, dest_dir.fd, dest) catch |err| return Result.fail(err, .linking_dependency, null);
             }
 
-            if (isDanglingSymlink(symlinked_path)) return Result.fail(error.DanglingSymlink, .linking_dependency);
+            if (isDanglingSymlink(symlinked_path)) return Result.fail(error.DanglingSymlink, .linking_dependency, @errorReturnTrace());
 
             return Result.success();
         }
@@ -2440,8 +2435,8 @@ pub fn NewPackageInstall(comptime kind: PkgInstallKind) type {
                                     supported_method = .copyfile;
                                     supported_method_to_use = .copyfile;
                                 },
-                                error.FileNotFound => return Result.fail(error.FileNotFound, .opening_cache_dir),
-                                else => return Result.fail(err, .copying_files),
+                                error.FileNotFound => return Result.fail(error.FileNotFound, .opening_cache_dir, @errorReturnTrace()),
+                                else => return Result.fail(err, .copying_files, @errorReturnTrace()),
                             }
                         }
                     }
@@ -2456,8 +2451,8 @@ pub fn NewPackageInstall(comptime kind: PkgInstallKind) type {
                                     supported_method = .copyfile;
                                     supported_method_to_use = .copyfile;
                                 },
-                                error.FileNotFound => return Result.fail(error.FileNotFound, .opening_cache_dir),
-                                else => return Result.fail(err, .copying_files),
+                                error.FileNotFound => return Result.fail(error.FileNotFound, .opening_cache_dir, @errorReturnTrace()),
+                                else => return Result.fail(err, .copying_files, @errorReturnTrace()),
                             }
                         }
                     }
@@ -2475,16 +2470,16 @@ pub fn NewPackageInstall(comptime kind: PkgInstallKind) type {
                         }
 
                         return switch (err) {
-                            error.FileNotFound => Result.fail(error.FileNotFound, .opening_cache_dir),
-                            else => Result.fail(err, .copying_files),
+                            error.FileNotFound => Result.fail(error.FileNotFound, .opening_cache_dir, @errorReturnTrace()),
+                            else => Result.fail(err, .copying_files, @errorReturnTrace()),
                         };
                     }
                 },
                 .symlink => {
                     return this.installWithSymlink(destination_dir) catch |err| {
                         return switch (err) {
-                            error.FileNotFound => Result.fail(err, .opening_cache_dir),
-                            else => Result.fail(err, .copying_files),
+                            error.FileNotFound => Result.fail(err, .opening_cache_dir, @errorReturnTrace()),
+                            else => Result.fail(err, .copying_files, @errorReturnTrace()),
                         };
                     };
                 },
@@ -3068,7 +3063,7 @@ pub const PackageManager = struct {
             duration: u64,
         };
 
-        mutex: std.Thread.Mutex = .{},
+        mutex: bun.Mutex = .{},
         list: std.ArrayListUnmanaged(Entry) = .{},
 
         pub fn appendConcurrent(log: *LifecycleScriptTimeLog, allocator: std.mem.Allocator, entry: Entry) void {
@@ -7184,7 +7179,8 @@ pub const PackageManager = struct {
         ca: []const string = &.{},
         ca_file_name: string = &.{},
 
-        save_text_lockfile: bool = false,
+        // if set to `false` in bunfig, save a binary lockfile
+        save_text_lockfile: ?bool = null,
 
         lockfile_only: bool = false,
 
@@ -7245,6 +7241,7 @@ pub const PackageManager = struct {
         pub const Update = struct {
             development: bool = false,
             optional: bool = false,
+            peer: bool = false,
         };
 
         pub fn openGlobalDir(explicit_global_dir: string) !std.fs.Dir {
@@ -7439,6 +7436,12 @@ pub const PackageManager = struct {
                     this.cache_directory = cache_dir;
                 }
 
+                if (config.ignore_scripts) |ignore_scripts| {
+                    if (ignore_scripts) {
+                        this.do.run_scripts = false;
+                    }
+                }
+
                 this.explicit_global_directory = config.global_dir orelse this.explicit_global_directory;
             }
 
@@ -7566,7 +7569,7 @@ pub const PackageManager = struct {
                     this.do.save_lockfile = false;
                 }
 
-                if (cli.no_summary) {
+                if (cli.no_summary or cli.silent) {
                     this.do.summary = false;
                 }
 
@@ -7659,8 +7662,13 @@ pub const PackageManager = struct {
                     this.enable.force_save_lockfile = true;
                 }
 
-                this.update.development = cli.development;
-                if (!this.update.development) this.update.optional = cli.optional;
+                if (cli.development) {
+                    this.update.development = cli.development;
+                } else if (cli.optional) {
+                    this.update.optional = cli.optional;
+                } else if (cli.peer) {
+                    this.update.peer = cli.peer;
+                }
 
                 switch (cli.patch) {
                     .nothing => {},
@@ -8837,7 +8845,7 @@ pub const PackageManager = struct {
                                 } else child_path;
 
                                 if (strings.eqlLong(maybe_workspace_path, path, true)) {
-                                    fs.top_level_dir = parent;
+                                    fs.top_level_dir = try bun.default_allocator.dupeZ(u8, parent);
                                     found = true;
                                     child_json.close();
                                     if (comptime Environment.isWindows) {
@@ -8854,16 +8862,15 @@ pub const PackageManager = struct {
                 }
             }
 
-            fs.top_level_dir = child_cwd;
+            fs.top_level_dir = try bun.default_allocator.dupeZ(u8, child_cwd);
             break :root_package_json_file child_json;
         };
 
-        try bun.sys.chdir(fs.top_level_dir).unwrap();
+        try bun.sys.chdir(fs.top_level_dir, fs.top_level_dir).unwrap();
         try BunArguments.loadConfig(ctx.allocator, cli.config, ctx, .InstallCommand);
         bun.copy(u8, &cwd_buf, fs.top_level_dir);
-        cwd_buf[fs.top_level_dir.len] = std.fs.path.sep;
-        cwd_buf[fs.top_level_dir.len + 1] = 0;
-        fs.top_level_dir = cwd_buf[0 .. fs.top_level_dir.len + 1];
+        cwd_buf[fs.top_level_dir.len] = 0;
+        fs.top_level_dir = cwd_buf[0..fs.top_level_dir.len :0];
         package_json_cwd = try bun.getFdPath(root_package_json_file.handle, &package_json_cwd_buf);
 
         const entries_option = try fs.fs.readDirectory(fs.top_level_dir, null, 0, true);
@@ -9600,6 +9607,7 @@ pub const PackageManager = struct {
         clap.parseParam("-d, --dev                 Add dependency to \"devDependencies\"") catch unreachable,
         clap.parseParam("-D, --development") catch unreachable,
         clap.parseParam("--optional                        Add dependency to \"optionalDependencies\"") catch unreachable,
+        clap.parseParam("--peer                        Add dependency to \"peerDependencies\"") catch unreachable,
         clap.parseParam("-E, --exact                  Add the exact version instead of the ^range") catch unreachable,
         clap.parseParam("--filter <STR>...                 Install packages for the matching workspaces") catch unreachable,
         clap.parseParam("<POS> ...                         ") catch unreachable,
@@ -9622,6 +9630,7 @@ pub const PackageManager = struct {
         clap.parseParam("-d, --dev                 Add dependency to \"devDependencies\"") catch unreachable,
         clap.parseParam("-D, --development") catch unreachable,
         clap.parseParam("--optional                        Add dependency to \"optionalDependencies\"") catch unreachable,
+        clap.parseParam("--peer                        Add dependency to \"peerDependencies\"") catch unreachable,
         clap.parseParam("-E, --exact                  Add the exact version instead of the ^range") catch unreachable,
         clap.parseParam("<POS> ...                         \"name\" or \"name@version\" of package(s) to install") catch unreachable,
     });
@@ -9705,6 +9714,7 @@ pub const PackageManager = struct {
 
         development: bool = false,
         optional: bool = false,
+        peer: bool = false,
 
         omit: ?Omit = null,
 
@@ -9740,12 +9750,18 @@ pub const PackageManager = struct {
         };
 
         pub fn printHelp(subcommand: Subcommand) void {
+
+            // the output of --help uses the following syntax highlighting
+            // template: <b>Usage<r>: <b><green>bun <command><r> <cyan>[flags]<r> <blue>[arguments]<r>
+            // use [foo] for multiple arguments or flags for foo.
+            // use <bar> to emphasize 'bar'
+
             switch (subcommand) {
                 // fall back to HelpCommand.printWithReason
                 Subcommand.install => {
                     const intro_text =
-                        \\<b>Usage<r>: <b><green>bun install<r> <cyan>[flags]<r> [...\<pkg\>]
-                        \\<b>Alias: <b>bun i<r>
+                        \\<b>Usage<r>: <b><green>bun install<r> <cyan>[flags]<r> <blue>\<name\><r><d>@\<version\><r>
+                        \\<b>Alias: <b><green>bun i<r>
                         \\  Install the dependencies listed in package.json
                     ;
                     const outro_text =
@@ -9754,7 +9770,7 @@ pub const PackageManager = struct {
                         \\  <b><green>bun install<r>
                         \\
                         \\  <d>Skip devDependencies<r>
-                        \\  <b><green>bun install --production<r>
+                        \\  <b><green>bun install<r> <cyan>--production<r>
                         \\
                         \\Full documentation is available at <magenta>https://bun.sh/docs/cli/install<r>
                     ;
@@ -9768,7 +9784,7 @@ pub const PackageManager = struct {
                 },
                 Subcommand.update => {
                     const intro_text =
-                        \\<b>Usage<r>: <b><green>bun update<r> <cyan>[flags]<r>
+                        \\<b>Usage<r>: <b><green>bun update<r> <cyan>[flags]<r> <blue>\<name\><r><d>@\<version\><r>
                         \\  Update all dependencies to most recent versions within the version range in package.json
                         \\
                     ;
@@ -9778,10 +9794,10 @@ pub const PackageManager = struct {
                         \\  <b><green>bun update<r>
                         \\
                         \\  <d>Update all dependencies to latest:<r>
-                        \\  <b><green>bun update --latest<r>
+                        \\  <b><green>bun update<r> <cyan>--latest<r>
                         \\
                         \\  <d>Update specific packages:<r>
-                        \\  <b><green>bun update zod jquery@3<r>
+                        \\  <b><green>bun update<r> <blue>zod jquery@3<r>
                         \\
                         \\Full documentation is available at <magenta>https://bun.sh/docs/cli/update<r>
                     ;
@@ -9795,7 +9811,7 @@ pub const PackageManager = struct {
                 },
                 Subcommand.patch => {
                     const intro_text =
-                        \\<b>Usage: bun patch <r><cyan>\<name\>@\<version\><r>
+                        \\<b>Usage<r>: <b><green>bun patch<r> <cyan>[flags or options]<r> <blue>\<package\><r><d>@\<version\><r>
                         \\
                         \\Prepare a package for patching.
                         \\
@@ -9807,11 +9823,12 @@ pub const PackageManager = struct {
                     Output.flush();
                     clap.simpleHelp(PackageManager.patch_params);
                     // Output.pretty("\n\n" ++ outro_text ++ "\n", .{});
+                    Output.pretty("\n", .{});
                     Output.flush();
                 },
                 Subcommand.@"patch-commit" => {
                     const intro_text =
-                        \\<b>Usage: bun patch-commit <r><cyan>\<directory\><r>
+                        \\<b>Usage<r>: <b><green>bun patch-commit<r> <cyan>[flags or options]<r> <blue>\<directory\><r>
                         \\
                         \\Generate a patc out of a directory and save it.
                         \\
@@ -9832,6 +9849,7 @@ pub const PackageManager = struct {
                     Output.flush();
                     clap.simpleHelp(PackageManager.patch_params);
                     // Output.pretty("\n\n" ++ outro_text ++ "\n", .{});
+                    Output.pretty("\n", .{});
                     Output.flush();
                 },
                 Subcommand.pm => {
@@ -9839,20 +9857,20 @@ pub const PackageManager = struct {
                 },
                 Subcommand.add => {
                     const intro_text =
-                        \\<b>Usage<r>: <b><green>bun add<r> <cyan>[flags]<r> \<pkg\> [...\<pkg\>]
-                        \\<b>Alias: <b>bun a<r>
+                        \\<b>Usage<r>: <b><green>bun add<r> <cyan>[flags]<r> <blue>\<package\><r><d>\<@version\><r>
+                        \\<b>Alias: <b><green>bun a<r>
                     ;
                     const outro_text =
                         \\<b>Examples:<r>
                         \\  <d>Add a dependency from the npm registry<r>
-                        \\  <b><green>bun add zod<r>
-                        \\  <b><green>bun add zod@next<r>
-                        \\  <b><green>bun add zod@3.0.0<r>
+                        \\  <b><green>bun add<r> <blue>zod<r>
+                        \\  <b><green>bun add<r> <blue>zod@next<r>
+                        \\  <b><green>bun add<r> <blue>zod@3.0.0<r>
                         \\
                         \\  <d>Add a dev, optional, or peer dependency <r>
-                        \\  <b><green>bun add -d typescript<r>
-                        \\  <b><green>bun add --optional lodash<r>
-                        \\  <b><green>bun add --peer esbuild<r>
+                        \\  <b><green>bun add<r> <cyan>-d<r> <blue>typescript<r>
+                        \\  <b><green>bun add<r> <cyan>--optional<r> <blue>lodash<r>
+                        \\  <b><green>bun add<r> <cyan>--peer<r> <blue>esbuild<r>
                         \\
                         \\Full documentation is available at <magenta>https://bun.sh/docs/cli/add<r>
                     ;
@@ -9866,7 +9884,7 @@ pub const PackageManager = struct {
                 },
                 Subcommand.remove => {
                     const intro_text =
-                        \\<b>Usage<r>: <b><green>bun remove<r> <cyan>[flags]<r> \<pkg\> [...\<pkg\>]
+                        \\<b>Usage<r>: <b><green>bun remove<r> <cyan>[flags]<r> <blue>[\<packages\>]<r>
                         \\<b>Alias: <b>bun r<r>
                         \\  Remove a package from package.json and uninstall from node_modules
                         \\
@@ -9874,7 +9892,7 @@ pub const PackageManager = struct {
                     const outro_text =
                         \\<b>Examples:<r>
                         \\  <d>Remove a dependency<r>
-                        \\  <b><green>bun remove ts-node<r>
+                        \\  <b><green>bun remove<r> <blue>ts-node<r>
                         \\
                         \\Full documentation is available at <magenta>https://bun.sh/docs/cli/remove<r>
                     ;
@@ -9888,7 +9906,7 @@ pub const PackageManager = struct {
                 },
                 Subcommand.link => {
                     const intro_text =
-                        \\<b>Usage<r>: <b><green>bun link<r> <cyan>[flags]<r> [\<package\>]
+                        \\<b>Usage<r>: <b><green>bun link<r> <cyan>[flags]<r> <blue>[\<packages\>]<r>
                         \\
                     ;
                     const outro_text =
@@ -9898,7 +9916,7 @@ pub const PackageManager = struct {
                         \\  <b><green>bun link<r>
                         \\
                         \\  <d>Add a previously-registered linkable package as a dependency of the current project.<r>
-                        \\  <b><green>bun link \<package\><r>
+                        \\  <b><green>bun link<r> <blue>\<package\><r>
                         \\
                         \\Full documentation is available at <magenta>https://bun.sh/docs/cli/link<r>
                     ;
@@ -9933,7 +9951,7 @@ pub const PackageManager = struct {
                 },
                 .outdated => {
                     const intro_text =
-                        \\<b>Usage<r>: <b><green>bun outdated<r> <cyan>[flags]<r>
+                        \\<b>Usage<r>: <b><green>bun outdated<r> <cyan>[flags]<r> <blue>[filter]<r>
                     ;
 
                     const outro_text =
@@ -9942,14 +9960,14 @@ pub const PackageManager = struct {
                         \\  <b><green>bun outdated<r>
                         \\
                         \\  <d>Use --filter to include more than one workspace.<r>
-                        \\  <b><green>bun outdated --filter="*"<r>
-                        \\  <b><green>bun outdated --filter="./app/*"<r>
-                        \\  <b><green>bun outdated --filter="!frontend"<r>
+                        \\  <b><green>bun outdated<r> <cyan>--filter="*"<r>
+                        \\  <b><green>bun outdated<r> <cyan>--filter="./app/*"<r>
+                        \\  <b><green>bun outdated<r> <cyan>--filter="!frontend"<r>
                         \\
                         \\  <d>Filter dependencies with name patterns.<r>
-                        \\  <b><green>bun outdated jquery<r>
-                        \\  <b><green>bun outdated "is-*"<r>
-                        \\  <b><green>bun outdated "!is-even"<r>
+                        \\  <b><green>bun outdated<r> <blue>jquery<r>
+                        \\  <b><green>bun outdated<r> <blue>"is-*"<r>
+                        \\  <b><green>bun outdated<r> <blue>"!is-even"<r>
                         \\
                     ;
 
@@ -9980,19 +9998,19 @@ pub const PackageManager = struct {
                 },
                 .publish => {
                     const intro_text =
-                        \\<b>Usage<r>: <b><green>bun publish<r> <cyan>[flags]<r>
+                        \\<b>Usage<r>: <b><green>bun publish<r> <cyan>[flags]<r> <blue>[dist]<r>
                     ;
 
                     const outro_text =
                         \\<b>Examples:<r>
                         \\  <d>Display files that would be published, without publishing to the registry.<r>
-                        \\  <b><green>bun publish --dry-run<r>
+                        \\  <b><green>bun publish<r> <cyan>--dry-run<r>
                         \\
                         \\  <d>Publish the current package with public access.<r>
-                        \\  <b><green>bun publish --access public<r>
+                        \\  <b><green>bun publish<r> <cyan>--access public<r>
                         \\
                         \\  <d>Publish a pre-existing package tarball with tag 'next'.<r>
-                        \\  <b><green>bun publish ./path/to/tarball.tgz --tag next<r>
+                        \\  <b><green>bun publish<r> <cyan>--tag next<r> <blue>./path/to/tarball.tgz<r>
                         \\
                     ;
 
@@ -10181,6 +10199,7 @@ pub const PackageManager = struct {
             if (comptime subcommand == .add or subcommand == .install) {
                 cli.development = args.flag("--development") or args.flag("--dev");
                 cli.optional = args.flag("--optional");
+                cli.peer = args.flag("--peer");
                 cli.exact = args.flag("--exact");
             }
 
@@ -10203,7 +10222,7 @@ pub const PackageManager = struct {
                     buf[cwd_.len] = 0;
                     final_path = buf[0..cwd_.len :0];
                 }
-                bun.sys.chdir(final_path).unwrap() catch |err| {
+                bun.sys.chdir("", final_path).unwrap() catch |err| {
                     Output.errGeneric("failed to change directory to \"{s}\": {s}\n", .{ final_path, @errorName(err) });
                     Global.crash();
                 };
@@ -10770,6 +10789,8 @@ pub const PackageManager = struct {
             "devDependencies"
         else if (manager.options.update.optional)
             "optionalDependencies"
+        else if (manager.options.update.peer)
+            "peerDependencies"
         else
             "dependencies";
         var any_changes = false;
@@ -11341,10 +11362,7 @@ pub const PackageManager = struct {
                     switch (bun.sys.File.toSource(package_json_path, manager.allocator)) {
                         .result => |s| break :src s,
                         .err => |e| {
-                            Output.prettyError(
-                                "<r><red>error<r>: failed to read package.json: {}<r>\n",
-                                .{e.withPath(package_json_path).toSystemError()},
-                            );
+                            Output.err(e, "failed to read {s}", .{bun.fmt.quote(package_json_path)});
                             Global.crash();
                         },
                     }
@@ -11755,10 +11773,7 @@ pub const PackageManager = struct {
                     switch (bun.sys.File.toSource(package_json_path, manager.allocator)) {
                         .result => |s| break :brk s,
                         .err => |e| {
-                            Output.prettyError(
-                                "<r><red>error<r>: failed to read package.json: {}<r>\n",
-                                .{e.withPath(package_json_path).toSystemError()},
-                            );
+                            Output.err(e, "failed to read {s}", .{bun.fmt.quote(package_json_path)});
                             Global.crash();
                         },
                     }
@@ -11863,10 +11878,7 @@ pub const PackageManager = struct {
                 const cache_dir_path = switch (bun.sys.getFdPath(bun.toFD(cache_dir.fd), &buf2)) {
                     .result => |s| s,
                     .err => |e| {
-                        Output.prettyError(
-                            "<r><red>error<r>: failed to read from cache {}<r>\n",
-                            .{e.toSystemError()},
-                        );
+                        Output.err(e, "failed to read from cache", .{});
                         Global.crash();
                     },
                 };
@@ -11877,10 +11889,7 @@ pub const PackageManager = struct {
             };
 
             const random_tempdir = bun.span(bun.fs.FileSystem.instance.tmpname("node_modules_tmp", buf2[0..], bun.fastRandom()) catch |e| {
-                Output.prettyError(
-                    "<r><red>error<r>: failed to make tempdir {s}<r>\n",
-                    .{@errorName(e)},
-                );
+                Output.err(e, "failed to make tempdir", .{});
                 Global.crash();
             });
 
@@ -11891,10 +11900,7 @@ pub const PackageManager = struct {
             // will `rename()` it out and back again.
             const has_nested_node_modules = has_nested_node_modules: {
                 var new_folder_handle = std.fs.cwd().openDir(new_folder, .{}) catch |e| {
-                    Output.prettyError(
-                        "<r><red>error<r>: failed to open directory <b>{s}<r> {s}<r>\n",
-                        .{ new_folder, @errorName(e) },
-                    );
+                    Output.err(e, "failed to open directory <b>{s}<r>", .{new_folder});
                     Global.crash();
                 };
                 defer new_folder_handle.close();
@@ -11911,10 +11917,7 @@ pub const PackageManager = struct {
             };
 
             const patch_tag_tmpname = bun.span(bun.fs.FileSystem.instance.tmpname("patch_tmp", buf3[0..], bun.fastRandom()) catch |e| {
-                Output.prettyError(
-                    "<r><red>error<r>: failed to make tempdir {s}<r>\n",
-                    .{@errorName(e)},
-                );
+                Output.err(e, "failed to make tempdir", .{});
                 Global.crash();
             });
 
@@ -11932,10 +11935,7 @@ pub const PackageManager = struct {
                     break :has_bun_patch_tag null;
                 };
                 var new_folder_handle = std.fs.cwd().openDir(new_folder, .{}) catch |e| {
-                    Output.prettyError(
-                        "<r><red>error<r>: failed to open directory <b>{s}<r> {s}<r>\n",
-                        .{ new_folder, @errorName(e) },
-                    );
+                    Output.err(e, "failed to open directory <b>{s}<r>", .{new_folder});
                     Global.crash();
                 };
                 defer new_folder_handle.close();
@@ -12086,20 +12086,14 @@ pub const PackageManager = struct {
         )) {
             .result => |fd| fd,
             .err => |e| {
-                Output.prettyError(
-                    "<r><red>error<r>: failed to open temp file {}<r>\n",
-                    .{e.toSystemError()},
-                );
+                Output.err(e, "failed to open temp file", .{});
                 Global.crash();
             },
         };
         defer _ = bun.sys.close(tmpfd);
 
         if (bun.sys.File.writeAll(.{ .handle = tmpfd }, patchfile_contents.items).asErr()) |e| {
-            Output.prettyError(
-                "<r><red>error<r>: failed to write patch to temp file {}<r>\n",
-                .{e.toSystemError()},
-            );
+            Output.err(e, "failed to write patch to temp file", .{});
             Global.crash();
         }
 
@@ -12124,11 +12118,8 @@ pub const PackageManager = struct {
         const args = bun.JSC.Node.Arguments.Mkdir{
             .path = .{ .string = bun.PathString.init(manager.options.patch_features.commit.patches_dir) },
         };
-        if (nodefs.mkdirRecursive(args, .sync).asErr()) |e| {
-            Output.prettyError(
-                "<r><red>error<r>: failed to make patches dir {}<r>\n",
-                .{e.toSystemError()},
-            );
+        if (nodefs.mkdirRecursive(args).asErr()) |e| {
+            Output.err(e, "failed to make patches dir {}", .{bun.fmt.quote(args.path.slice())});
             Global.crash();
         }
 
@@ -12140,10 +12131,7 @@ pub const PackageManager = struct {
             path_in_patches_dir,
             .{ .move_fallback = true },
         ).asErr()) |e| {
-            Output.prettyError(
-                "<r><red>error<r>: failed renaming patch file to patches dir {}<r>\n",
-                .{e.toSystemError()},
-            );
+            Output.err(e, "failed renaming patch file to patches dir", .{});
             Global.crash();
         }
 
@@ -13393,7 +13381,7 @@ pub const PackageManager = struct {
                             const dirname = std.fs.path.dirname(this.node_modules.path.items) orelse this.node_modules.path.items;
 
                             installer.cache_dir = this.root_node_modules_folder.openDir(dirname, .{ .iterate = true, .access_sub_paths = true }) catch |err|
-                                break :result PackageInstall.Result.fail(err, .opening_cache_dir);
+                                break :result PackageInstall.Result.fail(err, .opening_cache_dir, @errorReturnTrace());
 
                             const result = if (resolution.tag == .root)
                                 installer.installFromLink(this.skip_delete, destination_dir)
@@ -13549,10 +13537,18 @@ pub const PackageManager = struct {
 
                             this.summary.fail += 1;
                         } else {
-                            Output.prettyErrorln(
-                                "<r><red>error<r>: <b><red>{s}<r> installing <b>{s}<r> ({s})",
-                                .{ @errorName(cause.err), this.names[package_id].slice(this.lockfile.buffers.string_bytes.items), install_result.fail.step.name() },
+                            Output.err(
+                                cause.err,
+                                "failed {s} for package <b>{s}<r>",
+                                .{
+                                    install_result.fail.step.name(),
+                                    this.names[package_id].slice(this.lockfile.buffers.string_bytes.items),
+                                },
                             );
+                            if (Environment.isDebug) {
+                                var t = cause.debug_trace;
+                                bun.crash_handler.dumpStackTrace(t.trace());
+                            }
                             this.summary.fail += 1;
                         }
                     },
@@ -13960,14 +13956,14 @@ pub const PackageManager = struct {
             new_node_modules = true;
 
             // Attempt to create a new node_modules folder
-            bun.sys.mkdir("node_modules", 0o755).unwrap() catch |err| {
-                if (err != error.EEXIST) {
-                    Output.prettyErrorln("<r><red>error<r>: <b><red>{s}<r> creating <b>node_modules<r> folder", .{@errorName(err)});
+            if (bun.sys.mkdir("node_modules", 0o755).asErr()) |err| {
+                if (err.errno != @intFromEnum(bun.C.E.EXIST)) {
+                    Output.err(err, "could not create the <b>\"node_modules\"<r> directory", .{});
                     Global.crash();
                 }
-            };
+            }
             break :brk bun.openDir(cwd, "node_modules") catch |err| {
-                Output.prettyErrorln("<r><red>error<r>: <b><red>{s}<r> opening <b>node_modules<r> folder", .{@errorName(err)});
+                Output.err(err, "could not open the <b>\"node_modules\"<r> directory", .{});
                 Global.crash();
             };
         };
@@ -14404,7 +14400,13 @@ pub const PackageManager = struct {
             (load_result.ok.lockfile.buffers.dependencies.items.len == 0 and manager.update_requests.len > 0);
 
         manager.options.enable.force_save_lockfile = manager.options.enable.force_save_lockfile or
-            (load_result == .ok and (load_result.ok.was_migrated or (load_result.ok.format == .binary and manager.options.save_text_lockfile)));
+            (load_result == .ok and
+            // if migrated always save a new lockfile
+            (load_result.ok.was_migrated or
+
+            // if loaded from binary and save-text-lockfile is passed
+            (load_result.ok.format == .binary and
+            manager.options.save_text_lockfile orelse false)));
 
         // this defaults to false
         // but we force allowing updates to the lockfile when you do bun add
@@ -14529,7 +14531,20 @@ pub const PackageManager = struct {
 
                     had_any_diffs = manager.summary.hasDiffs();
 
-                    if (had_any_diffs) {
+                    if (!had_any_diffs) {
+                        // always grab latest scripts for root package
+                        var builder_ = manager.lockfile.stringBuilder();
+                        var builder = &builder_;
+
+                        maybe_root.scripts.count(lockfile.buffers.string_bytes.items, *Lockfile.StringBuilder, builder);
+                        try builder.allocate();
+                        manager.lockfile.packages.items(.scripts)[0] = maybe_root.scripts.clone(
+                            lockfile.buffers.string_bytes.items,
+                            *Lockfile.StringBuilder,
+                            builder,
+                        );
+                        builder.clamp();
+                    } else {
                         var builder_ = manager.lockfile.stringBuilder();
                         // ensure we use one pointer to reference it instead of creating new ones and potentially aliasing
                         var builder = &builder_;
@@ -14989,13 +15004,7 @@ pub const PackageManager = struct {
 
         const lockfile_before_install = manager.lockfile;
 
-        const save_format: Lockfile.LoadResult.LockfileFormat = if (manager.options.save_text_lockfile)
-            .text
-        else switch (load_result) {
-            .not_found => .binary,
-            .err => |err| err.format,
-            .ok => |ok| ok.format,
-        };
+        const save_format = load_result.saveFormat(&manager.options);
 
         if (manager.options.lockfile_only) {
             // save the lockfile and exit. make sure metahash is generated for binary lockfile
@@ -15102,18 +15111,24 @@ pub const PackageManager = struct {
                 @min(packages_len_before_install, manager.lockfile.packages.len),
             );
 
-        const should_save_lockfile = did_meta_hash_change or
-            had_any_diffs or
-            needs_new_lockfile or
-
-            // this will handle new trusted dependencies added through --trust
-            manager.update_requests.len > 0 or
-            (load_result == .ok and load_result.ok.serializer_result.packages_need_update);
-
         // It's unnecessary work to re-save the lockfile if there are no changes
-        if (manager.options.do.save_lockfile and
-            (should_save_lockfile or manager.lockfile.isEmpty() or manager.options.enable.force_save_lockfile))
-        {
+        const should_save_lockfile =
+            (load_result == .ok and ((load_result.ok.format == .binary and save_format == .text) or
+
+            // make sure old versions are updated
+            load_result.ok.format == .text and save_format == .text and manager.lockfile.text_lockfile_version != TextLockfile.Version.current)) or
+
+            // check `save_lockfile` after checking if loaded from binary and save format is text
+            // because `save_lockfile` is set to false for `--frozen-lockfile`
+            (manager.options.do.save_lockfile and
+            (did_meta_hash_change or
+            had_any_diffs or
+            manager.update_requests.len > 0 or
+            (load_result == .ok and load_result.ok.serializer_result.packages_need_update) or
+            manager.lockfile.isEmpty() or
+            manager.options.enable.force_save_lockfile));
+
+        if (should_save_lockfile) {
             try manager.saveLockfile(&load_result, save_format, had_any_diffs, lockfile_before_install, packages_len_before_install, log_level);
         }
 
@@ -15289,11 +15304,14 @@ pub const PackageManager = struct {
                     .ok => |ok| ok.format,
                 };
 
-                std.fs.cwd().deleteFileZ(if (delete_format == .text) "bun.lock" else "bun.lockb") catch |err| brk: {
+                bun.sys.unlinkat(
+                    FD.cwd(),
+                    if (delete_format == .text) comptime bun.OSPathLiteral("bun.lock") else comptime bun.OSPathLiteral("bun.lockb"),
+                ).unwrap() catch |err| {
                     // we don't care
-                    if (err == error.FileNotFound) {
+                    if (err == error.ENOENT) {
                         if (had_any_diffs) return;
-                        break :brk;
+                        break :delete;
                     }
 
                     if (log_level != .silent) {
@@ -15324,7 +15342,12 @@ pub const PackageManager = struct {
             this.progress.refresh();
         }
 
-        this.lockfile.saveToDisk(save_format, this.options.log_level.isVerbose());
+        this.lockfile.saveToDisk(load_result, &this.options);
+
+        // delete binary lockfile if saving text lockfile
+        if (save_format == .text and load_result.loadedFromBinaryLockfile()) {
+            _ = bun.sys.unlinkat(FD.cwd(), comptime bun.OSPathLiteral("bun.lockb"));
+        }
 
         if (comptime Environment.allow_assert) {
             if (load_result.* != .not_found) {

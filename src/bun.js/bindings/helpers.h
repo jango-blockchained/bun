@@ -26,6 +26,7 @@ class GlobalObject;
 #pragma clang diagnostic ignored "-Wunused-function"
 
 extern "C" size_t Bun__stringSyntheticAllocationLimit;
+extern "C" const char* Bun__errnoName(int);
 
 namespace Zig {
 
@@ -81,6 +82,7 @@ static const WTF::String toString(ZigString str)
         return WTF::String();
     }
     if (UNLIKELY(isTaggedUTF8Ptr(str.ptr))) {
+        ASSERT_WITH_MESSAGE(!isTaggedExternalPtr(str.ptr), "UTF8 and external ptr are mutually exclusive. The external will never be freed.");
         return WTF::String::fromUTF8ReplacingInvalidSequences(std::span { untag(str.ptr), str.len });
     }
 

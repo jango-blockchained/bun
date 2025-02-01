@@ -161,7 +161,7 @@ pub fn copyFileZSlowWithHandle(in_handle: bun.FileDescriptor, to_dir: bun.FileDe
         var buf0: bun.WPathBuffer = undefined;
         var buf1: bun.WPathBuffer = undefined;
 
-        const dest = switch (bun.sys.normalizePathWindows(u8, to_dir, destination, &buf0)) {
+        const dest = switch (bun.sys.normalizePathWindows(u8, to_dir, destination, &buf0, .{})) {
             .result => |x| x,
             .err => |e| return .{ .err = e },
         };
@@ -499,3 +499,7 @@ pub extern fn strlen(ptr: [*c]const u8) usize;
 pub const passwd = translated.passwd;
 pub const geteuid = translated.geteuid;
 pub const getpwuid_r = translated.getpwuid_r;
+
+export fn Bun__errnoName(err: c_int) ?[*:0]const u8 {
+    return @tagName(bun.C.SystemErrno.init(err) orelse return null);
+}

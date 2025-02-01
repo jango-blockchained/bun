@@ -31,6 +31,13 @@ pub const Lifetime = enum {
     allocated,
     temporary,
 };
+
+/// Marshall a zig value into a JSValue using comptime reflection.
+///
+/// - Primitives are converted to their JS equivalent.
+/// - Types with `toJS` or `toJSNewlyCreated` methods have them called
+/// - Slices are converted to JS arrays
+/// - Enums are converted to 32-bit numbers.
 pub fn toJS(globalObject: *JSC.JSGlobalObject, comptime ValueType: type, value: ValueType, comptime lifetime: Lifetime) JSC.JSValue {
     const Type = comptime brk: {
         var CurrentType = ValueType;
@@ -52,9 +59,7 @@ pub fn toJS(globalObject: *JSC.JSGlobalObject, comptime ValueType: type, value: 
         bool => return JSC.JSValue.jsBoolean(if (comptime Type != ValueType) value.* else value),
         *JSC.JSGlobalObject => return value.toJSValue(),
         []const u8, [:0]const u8, [*:0]const u8, []u8, [:0]u8, [*:0]u8 => {
-            const str = bun.String.createUTF8(value);
-            defer str.deref();
-            return str.toJS(globalObject);
+            return bun.String.createUTF8ForJS(globalObject, value);
         },
         []const bun.String => {
             defer {
@@ -66,6 +71,18 @@ pub fn toJS(globalObject: *JSC.JSGlobalObject, comptime ValueType: type, value: 
             return bun.String.toJSArray(globalObject, value);
         },
         JSC.JSValue => return if (Type != ValueType) value.* else value,
+
+        inline []const u16, []const u32, []const i16, []const i8, []const i32, []const f32 => {
+            var array = JSC.JSValue.createEmptyArray(globalObject, value.len);
+            for (value, 0..) |item, i| {
+                array.putIndex(
+                    globalObject,
+                    @truncate(i),
+                    JSC.jsNumber(item),
+                );
+            }
+            return array;
+        },
 
         else => {
 
@@ -92,6 +109,13 @@ pub fn toJS(globalObject: *JSC.JSGlobalObject, comptime ValueType: type, value: 
 
             if (comptime @hasDecl(Type, "toJS") and @typeInfo(@TypeOf(@field(Type, "toJS"))).Fn.params.len == 2) {
                 return value.toJS(globalObject);
+            }
+
+            // must come after toJS check in case this enum implements its own serializer.
+            if (@typeInfo(Type) == .Enum) {
+                // FIXME: creates non-normalized integers (e.g. u2), which
+                // aren't handled by `jsNumberWithType` rn
+                return JSC.JSValue.jsNumberWithType(u32, @as(u32, @intFromEnum(value)));
             }
 
             @compileError("dont know how to convert " ++ @typeName(ValueType) ++ " to JS");
@@ -968,10 +992,8 @@ pub fn DOMCall(
         pub const Extern = [_][]const u8{"put"};
 
         comptime {
-            if (!JSC.is_bindgen) {
-                @export(slowpath, .{ .name = shim.symbolName("slowpath") });
-                @export(fastpath, .{ .name = shim.symbolName("fastpath") });
-            }
+            @export(slowpath, .{ .name = shim.symbolName("slowpath") });
+            @export(fastpath, .{ .name = shim.symbolName("fastpath") });
         }
     };
 }
