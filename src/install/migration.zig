@@ -20,7 +20,7 @@ const Npm = @import("./npm.zig");
 const Integrity = @import("./integrity.zig").Integrity;
 const Bin = @import("./bin.zig").Bin;
 
-const Semver = @import("./semver.zig");
+const Semver = bun.Semver;
 const String = Semver.String;
 const ExternalString = Semver.ExternalString;
 const stringHash = String.Builder.stringHash;
@@ -63,7 +63,7 @@ pub fn detectAndLoadOtherLockfile(
                 , .{});
                 Global.exit(1);
             }
-            if (Environment.allow_assert) {
+            if (Environment.isDebug) {
                 bun.handleErrorReturnTrace(err, @errorReturnTrace());
 
                 Output.prettyErrorln("Error: {s}", .{@errorName(err)});
@@ -675,7 +675,7 @@ pub fn migrateNPMLockfile(
                                 .workspace = wksp_path,
                             },
                         },
-                        .behavior = Dependency.Behavior.workspace,
+                        .behavior = .{ .workspace = true },
                     };
                     resolutions_buf[0] = entry1.new_package_id;
 

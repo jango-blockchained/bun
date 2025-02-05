@@ -27,7 +27,7 @@ pub const LifecycleScriptSubprocess = struct {
     stderr: OutputReader = OutputReader.init(@This()),
     has_called_process_exit: bool = false,
     manager: *PackageManager,
-    envp: [:null]?[*:0]u8,
+    envp: [:null]?[*:0]const u8,
 
     timer: ?Timer = null,
 
@@ -206,11 +206,9 @@ pub const LifecycleScriptSubprocess = struct {
                 },
             .cwd = cwd,
 
-            .windows = if (Environment.isWindows)
-                .{
-                    .loop = JSC.EventLoopHandle.init(&manager.event_loop),
-                }
-            else {},
+            .windows = if (Environment.isWindows) .{
+                .loop = JSC.EventLoopHandle.init(&manager.event_loop),
+            },
 
             .stream = false,
         };
@@ -486,7 +484,7 @@ pub const LifecycleScriptSubprocess = struct {
     pub fn spawnPackageScripts(
         manager: *PackageManager,
         list: Lockfile.Package.Scripts.List,
-        envp: [:null]?[*:0]u8,
+        envp: [:null]?[*:0]const u8,
         optional: bool,
         comptime log_level: PackageManager.Options.LogLevel,
         comptime foreground: bool,

@@ -1076,6 +1076,77 @@ static napi_value create_weird_bigints(const Napi::CallbackInfo &info) {
   return array;
 }
 
+// Call Node-API functions in ways that result in different error handling
+// (erroneous call, valid call, or valid call while an exception is pending) and
+// log information from napi_get_last_error_info
+static napi_value test_extended_error_messages(const Napi::CallbackInfo &info) {
+  napi_env env = info.Env();
+  const napi_extended_error_info *error;
+
+  // this function is implemented in C++
+  // error because the result pointer is null
+  printf("erroneous napi_create_double returned code %d\n",
+         napi_create_double(env, 1.0, nullptr));
+  NODE_API_CALL(env, napi_get_last_error_info(env, &error));
+  printf("erroneous napi_create_double info: code = %d, message = %s\n",
+         error->error_code, error->error_message);
+
+  // this function should succeed and the success should overwrite the error
+  // from the last call
+  napi_value js_number;
+  printf("successful napi_create_double returned code %d\n",
+         napi_create_double(env, 5.0, &js_number));
+  NODE_API_CALL(env, napi_get_last_error_info(env, &error));
+  printf("successful napi_create_double info: code = %d, message = %s\n",
+         error->error_code,
+         error->error_message ? error->error_message : "(null)");
+
+  // this function is implemented in zig
+  // error because the value is not an array
+  unsigned int len;
+  printf("erroneous napi_get_array_length returned code %d\n",
+         napi_get_array_length(env, js_number, &len));
+  NODE_API_CALL(env, napi_get_last_error_info(env, &error));
+  printf("erroneous napi_get_array_length info: code = %d, message = %s\n",
+         error->error_code, error->error_message);
+
+  // throw an exception
+  NODE_API_CALL(env, napi_throw_type_error(env, nullptr, "oops!"));
+  // nothing is wrong with this call by itself, but it should return
+  // napi_pending_exception without doing anything because an exception is
+  // pending
+  napi_value coerced_string;
+  printf("napi_coerce_to_string with pending exception returned code %d\n",
+         napi_coerce_to_string(env, js_number, &coerced_string));
+  NODE_API_CALL(env, napi_get_last_error_info(env, &error));
+  printf(
+      "napi_coerce_to_string with pending exception info: code = %d, message = "
+      "%s\n",
+      error->error_code, error->error_message);
+
+  // clear the exception
+  napi_value exception;
+  NODE_API_CALL(env, napi_get_and_clear_last_exception(env, &exception));
+
+  return ok(env);
+}
+
+static napi_value test_is_buffer(const Napi::CallbackInfo &info) {
+  bool result;
+  napi_env env = info.Env();
+  NODE_API_CALL(info.Env(), napi_is_buffer(env, info[1], &result));
+  printf("napi_is_buffer -> %s\n", result ? "true" : "false");
+  return ok(env);
+}
+
+static napi_value test_is_typedarray(const Napi::CallbackInfo &info) {
+  bool result;
+  napi_env env = info.Env();
+  NODE_API_CALL(info.Env(), napi_is_typedarray(env, info[1], &result));
+  printf("napi_is_typedarray -> %s\n", result ? "true" : "false");
+  return ok(env);
+}
+
 Napi::Value RunCallback(const Napi::CallbackInfo &info) {
   Napi::Env env = info.Env();
   // this function is invoked without the GC callback
@@ -1147,6 +1218,11 @@ Napi::Object InitAll(Napi::Env env, Napi::Object exports1) {
   exports.Set("bigint_to_64_null", Napi::Function::New(env, bigint_to_64_null));
   exports.Set("create_weird_bigints",
               Napi::Function::New(env, create_weird_bigints));
+  exports.Set("test_extended_error_messages",
+              Napi::Function::New(env, test_extended_error_messages));
+  exports.Set("test_is_buffer", Napi::Function::New(env, test_is_buffer));
+  exports.Set("test_is_typedarray",
+              Napi::Function::New(env, test_is_typedarray));
 
   napitests::register_wrap_tests(env, exports);
 
