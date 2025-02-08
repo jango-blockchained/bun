@@ -109,7 +109,6 @@ pub const BuildCommand = struct {
         this_transpiler.options.footer = ctx.bundler_options.footer;
         this_transpiler.options.drop = ctx.args.drop;
 
-        this_transpiler.options.experimental = ctx.bundler_options.experimental;
         this_transpiler.options.css_chunking = ctx.bundler_options.css_chunking;
 
         this_transpiler.options.output_dir = ctx.bundler_options.outdir;
@@ -217,11 +216,9 @@ pub const BuildCommand = struct {
         try this_transpiler.configureDefines();
         this_transpiler.configureLinker();
 
-        if (bun.FeatureFlags.breaking_changes_1_2) {
-            // This is currently done in DevServer by default, but not in Bun.build
-            if (!this_transpiler.options.production) {
-                try this_transpiler.options.conditions.appendSlice(&.{"development"});
-            }
+        // This is currently done in DevServer by default, but not in Bun.build
+        if (!this_transpiler.options.production) {
+            try this_transpiler.options.conditions.appendSlice(&.{"development"});
         }
 
         this_transpiler.resolver.opts = this_transpiler.options;
@@ -238,18 +235,18 @@ pub const BuildCommand = struct {
             .unspecified => {},
         }
 
-        var client_bundler: transpiler.Transpiler = undefined;
+        var client_transpiler: transpiler.Transpiler = undefined;
         if (this_transpiler.options.server_components) {
-            client_bundler = try transpiler.Transpiler.init(allocator, log, ctx.args, null);
-            client_bundler.options = this_transpiler.options;
-            client_bundler.options.target = .browser;
-            client_bundler.options.server_components = true;
-            client_bundler.options.conditions = try this_transpiler.options.conditions.clone();
+            client_transpiler = try transpiler.Transpiler.init(allocator, log, ctx.args, null);
+            client_transpiler.options = this_transpiler.options;
+            client_transpiler.options.target = .browser;
+            client_transpiler.options.server_components = true;
+            client_transpiler.options.conditions = try this_transpiler.options.conditions.clone();
             try this_transpiler.options.conditions.appendSlice(&.{"react-server"});
             this_transpiler.options.react_fast_refresh = false;
             this_transpiler.options.minify_syntax = true;
-            client_bundler.options.minify_syntax = true;
-            client_bundler.options.define = try options.Define.init(
+            client_transpiler.options.minify_syntax = true;
+            client_transpiler.options.define = try options.Define.init(
                 allocator,
                 if (ctx.args.define) |user_defines|
                     try options.Define.Data.fromInput(try options.stringHashMapFromArrays(
@@ -265,10 +262,10 @@ pub const BuildCommand = struct {
             );
 
             try bun.bake.addImportMetaDefines(allocator, this_transpiler.options.define, .development, .server);
-            try bun.bake.addImportMetaDefines(allocator, client_bundler.options.define, .development, .client);
+            try bun.bake.addImportMetaDefines(allocator, client_transpiler.options.define, .development, .client);
 
             this_transpiler.resolver.opts = this_transpiler.options;
-            client_bundler.resolver.opts = client_bundler.options;
+            client_transpiler.resolver.opts = client_transpiler.options;
         }
 
         // var env_loader = this_transpiler.env;

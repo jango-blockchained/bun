@@ -38,7 +38,7 @@ const DotEnv = @import("../env_loader.zig");
 const NPMClient = @import("../which_npm_client.zig").NPMClient;
 const which = @import("../which.zig").which;
 const clap = bun.clap;
-const Lock = @import("../lock.zig").Lock;
+const Lock = bun.Mutex;
 const Headers = bun.http.Headers;
 const CopyFile = @import("../copy_file.zig");
 var bun_path_buf: bun.PathBuffer = undefined;
@@ -99,7 +99,7 @@ fn execTask(allocator: std.mem.Allocator, task_: string, cwd: string, _: string,
     const task = std.mem.trim(u8, task_, " \n\r\t");
     if (task.len == 0) return;
 
-    var splitter = std.mem.split(u8, task, " ");
+    var splitter = std.mem.splitScalar(u8, task, ' ');
     var count: usize = 0;
     while (splitter.next() != null) {
         count += 1;
@@ -117,7 +117,7 @@ fn execTask(allocator: std.mem.Allocator, task_: string, cwd: string, _: string,
     {
         var i: usize = npm_args;
 
-        splitter = std.mem.split(u8, task, " ");
+        splitter = std.mem.splitScalar(u8, task, ' ');
         while (splitter.next()) |split| {
             argv[i] = split;
             i += 1;
@@ -154,7 +154,7 @@ fn execTask(allocator: std.mem.Allocator, task_: string, cwd: string, _: string,
 
         .windows = if (Environment.isWindows) .{
             .loop = bun.JSC.EventLoopHandle.init(bun.JSC.MiniEventLoop.initGlobal(null)),
-        } else {},
+        },
     }) catch return;
 }
 
@@ -237,7 +237,7 @@ const BUN_CREATE_DIR = ".bun-create";
 var home_dir_buf: bun.PathBuffer = undefined;
 pub const CreateCommand = struct {
     pub fn exec(ctx: Command.Context, example_tag: Example.Tag, template: []const u8) !void {
-        @setCold(true);
+        @branchHint(.cold);
 
         Global.configureAllocator(.{ .long_running = false });
         HTTP.HTTPThread.init(&.{});
@@ -475,18 +475,14 @@ pub const CreateCommand = struct {
                 };
 
                 var destination_buf: if (Environment.isWindows) bun.WPathBuffer else void = undefined;
-                const dst_without_trailing_slash: if (Environment.isWindows) string else void = if (comptime Environment.isWindows)
-                    strings.withoutTrailingSlash(destination)
-                else {};
+                const dst_without_trailing_slash: if (Environment.isWindows) string else void = if (comptime Environment.isWindows) strings.withoutTrailingSlash(destination);
                 if (comptime Environment.isWindows) {
                     strings.copyU8IntoU16(&destination_buf, dst_without_trailing_slash);
                     destination_buf[dst_without_trailing_slash.len] = std.fs.path.sep;
                 }
 
                 var template_path_buf: if (Environment.isWindows) bun.WPathBuffer else void = undefined;
-                const src_without_trailing_slash: if (Environment.isWindows) string else void = if (comptime Environment.isWindows)
-                    strings.withoutTrailingSlash(abs_template_path)
-                else {};
+                const src_without_trailing_slash: if (Environment.isWindows) string else void = if (comptime Environment.isWindows) strings.withoutTrailingSlash(abs_template_path);
                 if (comptime Environment.isWindows) {
                     strings.copyU8IntoU16(&template_path_buf, src_without_trailing_slash);
                     template_path_buf[src_without_trailing_slash.len] = std.fs.path.sep;
@@ -597,10 +593,10 @@ pub const CreateCommand = struct {
                     &walker_,
                     node,
                     &progress,
-                    if (comptime Environment.isWindows) dst_without_trailing_slash.len + 1 else {},
-                    if (comptime Environment.isWindows) &destination_buf else {},
-                    if (comptime Environment.isWindows) src_without_trailing_slash.len + 1 else {},
-                    if (comptime Environment.isWindows) &template_path_buf else {},
+                    if (comptime Environment.isWindows) dst_without_trailing_slash.len + 1,
+                    if (comptime Environment.isWindows) &destination_buf,
+                    if (comptime Environment.isWindows) src_without_trailing_slash.len + 1,
+                    if (comptime Environment.isWindows) &template_path_buf,
                 );
 
                 package_json_file = destination_dir.openFile("package.json", .{ .mode = .read_write }) catch null;
@@ -1371,7 +1367,7 @@ pub const CreateCommand = struct {
                                     for (items) |task| {
                                         if (task.asString(ctx.allocator)) |task_entry| {
                                             // if (needs.bun_bun_for_nextjs or bun_bun_for_react_scripts) {
-                                            //     var iter = std.mem.split(u8, task_entry, " ");
+                                            //     var iter = std.mem.splitScalar(u8, task_entry, ' ');
                                             //     var last_was_bun = false;
                                             //     while (iter.next()) |current| {
                                             //         if (strings.eqlComptime(current, "bun")) {
@@ -1517,7 +1513,7 @@ pub const CreateCommand = struct {
 
                 .windows = if (Environment.isWindows) .{
                     .loop = bun.JSC.EventLoopHandle.init(bun.JSC.MiniEventLoop.initGlobal(null)),
-                } else {},
+                },
             });
             _ = try process.unwrap();
         }
@@ -1935,7 +1931,7 @@ pub const Example = struct {
             ),
         );
 
-        var header_entries: Headers.Entries = .{};
+        var header_entries: Headers.Entry.List = .{};
         var headers_buf: string = "";
 
         if (env_loader.map.get("GITHUB_TOKEN") orelse env_loader.map.get("GITHUB_ACCESS_TOKEN")) |access_token| {
@@ -1943,14 +1939,14 @@ pub const Example = struct {
                 headers_buf = try std.fmt.allocPrint(ctx.allocator, "AuthorizationBearer {s}", .{access_token});
                 try header_entries.append(
                     ctx.allocator,
-                    Headers.Kv{
-                        .name = Api.StringPointer{
+                    .{
+                        .name = .{
                             .offset = 0,
-                            .length = @as(u32, @intCast("Authorization".len)),
+                            .length = @intCast("Authorization".len),
                         },
-                        .value = Api.StringPointer{
-                            .offset = @as(u32, @intCast("Authorization".len)),
-                            .length = @as(u32, @intCast(headers_buf.len - "Authorization".len)),
+                        .value = .{
+                            .offset = @intCast("Authorization".len),
+                            .length = @intCast(headers_buf.len - "Authorization".len),
                         },
                     },
                 );
@@ -2310,7 +2306,6 @@ const GitHandler = struct {
         else
             run(destination, PATH, false) catch false;
 
-        @fence(.acquire);
         success.store(
             if (outcome)
                 1
@@ -2322,8 +2317,6 @@ const GitHandler = struct {
     }
 
     pub fn wait() bool {
-        @fence(.release);
-
         while (success.load(.acquire) == 0) {
             Futex.wait(&success, 0, 1000) catch continue;
         }

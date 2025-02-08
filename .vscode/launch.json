@@ -7,6 +7,19 @@
   // - "cppvsdbg" is used instead of "lldb" on Windows, because "lldb" is too slow
   "version": "0.2.0",
   "configurations": [
+    {
+      "type": "bun",
+      "request": "launch",
+      "name": "[js] bun test [file]",
+      "runtime": "${workspaceFolder}/build/debug/bun-debug",
+      "args": ["test", "${file}"],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "BUN_DEBUG_QUIET_LOGS": "1",
+        "BUN_DEBUG_jest": "1",
+        "BUN_GARBAGE_COLLECTOR_LEVEL": "1",
+      },
+    },
     // bun test [file]
     {
       "type": "lldb",
@@ -15,7 +28,6 @@
       "program": "${workspaceFolder}/build/debug/bun-debug",
       "args": ["test", "${file}"],
       "cwd": "${workspaceFolder}",
-      "envFile": "${workspaceFolder}/.env",
       "env": {
         "BUN_DEBUG_QUIET_LOGS": "1",
         "BUN_DEBUG_jest": "1",
@@ -32,7 +44,6 @@
       "program": "${workspaceFolder}/build/debug/bun-debug",
       "args": ["test", "--only", "${file}"],
       "cwd": "${workspaceFolder}",
-      "envFile": "${workspaceFolder}/.env",
       "env": {
         "BUN_DEBUG_QUIET_LOGS": "1",
         "BUN_GARBAGE_COLLECTOR_LEVEL": "1",
@@ -55,7 +66,6 @@
       "program": "${workspaceFolder}/build/debug/bun-debug",
       "args": ["test", "${file}"],
       "cwd": "${workspaceFolder}",
-      "envFile": "${workspaceFolder}/.env",
       "env": {
         "BUN_DEBUG_QUIET_LOGS": "1",
         "BUN_DEBUG_jest": "1",
@@ -72,7 +82,6 @@
       "program": "${workspaceFolder}/build/debug/bun-debug",
       "args": ["test", "${file}"],
       "cwd": "${workspaceFolder}",
-      "envFile": "${workspaceFolder}/.env",
       "env": {
         "BUN_DEBUG_QUIET_LOGS": "0",
         "BUN_DEBUG_jest": "1",
@@ -89,7 +98,6 @@
       "program": "${workspaceFolder}/build/debug/bun-debug",
       "args": ["test", "--watch", "${file}"],
       "cwd": "${workspaceFolder}",
-      "envFile": "${workspaceFolder}/.env",
       "env": {
         "BUN_DEBUG_QUIET_LOGS": "1",
         "BUN_DEBUG_jest": "1",
@@ -106,7 +114,6 @@
       "program": "${workspaceFolder}/build/debug/bun-debug",
       "args": ["test", "--hot", "${file}"],
       "cwd": "${workspaceFolder}",
-      "envFile": "${workspaceFolder}/.env",
       "env": {
         "BUN_DEBUG_QUIET_LOGS": "1",
         "BUN_DEBUG_jest": "1",
@@ -123,7 +130,6 @@
       "program": "${workspaceFolder}/build/debug/bun-debug",
       "args": ["test", "${file}"],
       "cwd": "${workspaceFolder}",
-      "envFile": "${workspaceFolder}/.env",
       "env": {
         "BUN_DEBUG_QUIET_LOGS": "1",
         "BUN_DEBUG_jest": "1",
@@ -146,7 +152,6 @@
       "program": "${workspaceFolder}/build/debug/bun-debug",
       "args": ["test", "${file}"],
       "cwd": "${workspaceFolder}",
-      "envFile": "${workspaceFolder}/.env",
       "env": {
         "BUN_DEBUG_QUIET_LOGS": "1",
         "BUN_DEBUG_jest": "1",
@@ -168,9 +173,8 @@
       "request": "launch",
       "name": "bun run [file]",
       "program": "${workspaceFolder}/build/debug/bun-debug",
-      "args": ["run", "${fileBasename}"],
+      "args": ["${file}"],
       "cwd": "${fileDirname}",
-      "envFile": "${workspaceFolder}/.env",
       "env": {
         "FORCE_COLOR": "0",
         "BUN_DEBUG_QUIET_LOGS": "1",
@@ -185,9 +189,8 @@
       "request": "launch",
       "name": "bun run [file] (fast)",
       "program": "${workspaceFolder}/build/debug/bun-debug",
-      "args": ["run", "${fileBasename}"],
+      "args": ["run", "${file}"],
       "cwd": "${fileDirname}",
-      "envFile": "${workspaceFolder}/.env",
       "env": {
         "BUN_DEBUG_QUIET_LOGS": "1",
         "BUN_GARBAGE_COLLECTOR_LEVEL": "0",
@@ -205,9 +208,8 @@
       "request": "launch",
       "name": "bun run [file] (verbose)",
       "program": "${workspaceFolder}/build/debug/bun-debug",
-      "args": ["run", "${fileBasename}"],
+      "args": ["run", "${file}"],
       "cwd": "${fileDirname}",
-      "envFile": "${workspaceFolder}/.env",
       "env": {
         "BUN_DEBUG_QUIET_LOGS": "0",
         "BUN_GARBAGE_COLLECTOR_LEVEL": "2",
@@ -221,9 +223,8 @@
       "request": "launch",
       "name": "bun run [file] --watch",
       "program": "${workspaceFolder}/build/debug/bun-debug",
-      "args": ["run", "--watch", "${fileBasename}"],
+      "args": ["run", "--watch", "${file}"],
       "cwd": "${fileDirname}",
-      "envFile": "${workspaceFolder}/.env",
       "env": {
         // "BUN_DEBUG_DEBUGGER": "1",
         // "BUN_DEBUG_INTERNAL_DEBUGGER": "1",
@@ -240,9 +241,8 @@
       "request": "launch",
       "name": "bun run [file] --hot",
       "program": "${workspaceFolder}/build/debug/bun-debug",
-      "args": ["run", "--hot", "${fileBasename}"],
+      "args": ["run", "--hot", "${file}"],
       "cwd": "${fileDirname}",
-      "envFile": "${workspaceFolder}/.env",
       "env": {
         "BUN_DEBUG_QUIET_LOGS": "1",
         "BUN_GARBAGE_COLLECTOR_LEVEL": "2",
@@ -256,9 +256,8 @@
       "request": "launch",
       "name": "bun run [file] --inspect",
       "program": "${workspaceFolder}/build/debug/bun-debug",
-      "args": ["run", "${fileBasename}"],
+      "args": ["run", "${file}"],
       "cwd": "${fileDirname}",
-      "envFile": "${workspaceFolder}/.env",
       "env": {
         "FORCE_COLOR": "0",
         "BUN_DEBUG_QUIET_LOGS": "1",
@@ -279,9 +278,8 @@
       "request": "launch",
       "name": "bun run [file] --inspect-brk",
       "program": "${workspaceFolder}/build/debug/bun-debug",
-      "args": ["run", "${fileBasename}"],
+      "args": ["run", "${file}"],
       "cwd": "${fileDirname}",
-      "envFile": "${workspaceFolder}/.env",
       "env": {
         "FORCE_COLOR": "0",
         "BUN_DEBUG_QUIET_LOGS": "1",
@@ -305,7 +303,6 @@
       "program": "${workspaceFolder}/build/debug/bun-debug",
       "args": ["test", "${input:testName}"],
       "cwd": "${workspaceFolder}",
-      "envFile": "${workspaceFolder}/.env",
       "env": {
         "BUN_DEBUG_QUIET_LOGS": "1",
         "BUN_DEBUG_jest": "1",
@@ -322,7 +319,6 @@
       "program": "${workspaceFolder}/build/debug/bun-debug",
       "args": ["test", "${input:testName}"],
       "cwd": "${workspaceFolder}",
-      "envFile": "${workspaceFolder}/.env",
       "env": {
         "BUN_DEBUG_QUIET_LOGS": "1",
         "BUN_DEBUG_jest": "1",
@@ -339,7 +335,6 @@
       "program": "${workspaceFolder}/build/debug/bun-debug",
       "args": ["test", "${input:testName}"],
       "cwd": "${workspaceFolder}",
-      "envFile": "${workspaceFolder}/.env",
       "env": {
         "BUN_DEBUG_QUIET_LOGS": "1",
         "BUN_DEBUG_jest": "1",
@@ -356,7 +351,6 @@
       "program": "${workspaceFolder}/build/debug/bun-debug",
       "args": ["test", "--watch", "${input:testName}"],
       "cwd": "${workspaceFolder}",
-      "envFile": "${workspaceFolder}/.env",
       "env": {
         "BUN_DEBUG_QUIET_LOGS": "1",
         "BUN_DEBUG_jest": "1",
@@ -373,7 +367,6 @@
       "program": "${workspaceFolder}/build/debug/bun-debug",
       "args": ["test", "--hot", "${input:testName}"],
       "cwd": "${workspaceFolder}",
-      "envFile": "${workspaceFolder}/.env",
       "env": {
         "BUN_DEBUG_QUIET_LOGS": "1",
         "BUN_DEBUG_jest": "1",
@@ -390,7 +383,6 @@
       "program": "${workspaceFolder}/build/debug/bun-debug",
       "args": ["test", "${input:testName}"],
       "cwd": "${workspaceFolder}",
-      "envFile": "${workspaceFolder}/.env",
       "env": {
         "BUN_DEBUG_QUIET_LOGS": "1",
         "BUN_DEBUG_jest": "1",
@@ -413,7 +405,6 @@
       "program": "${workspaceFolder}/build/debug/bun-debug",
       "args": ["test", "${input:testName}"],
       "cwd": "${workspaceFolder}",
-      "envFile": "${workspaceFolder}/.env",
       "env": {
         "BUN_DEBUG_QUIET_LOGS": "1",
         "BUN_DEBUG_jest": "1",
@@ -437,7 +428,6 @@
       "program": "${workspaceFolder}/build/debug/bun-debug",
       "args": ["exec", "${input:testName}"],
       "cwd": "${workspaceFolder}",
-      "envFile": "${workspaceFolder}/.env",
       "env": {
         "BUN_DEBUG_QUIET_LOGS": "1",
         "BUN_GARBAGE_COLLECTOR_LEVEL": "2",
@@ -454,7 +444,6 @@
       "program": "${workspaceFolder}/build/debug/bun-debug",
       "args": ["test"],
       "cwd": "${workspaceFolder}",
-      "envFile": "${workspaceFolder}/.env",
       "env": {
         "BUN_DEBUG_QUIET_LOGS": "1",
         "BUN_GARBAGE_COLLECTOR_LEVEL": "2",
@@ -470,7 +459,6 @@
       "program": "${workspaceFolder}/build/debug/bun-debug",
       "args": ["test"],
       "cwd": "${workspaceFolder}",
-      "envFile": "${workspaceFolder}/.env",
       "env": {
         "BUN_DEBUG_QUIET_LOGS": "1",
         "BUN_GARBAGE_COLLECTOR_LEVEL": "0",
@@ -486,7 +474,6 @@
       "program": "${workspaceFolder}/build/debug/bun-debug",
       "args": ["test"],
       "cwd": "${workspaceFolder}",
-      "envFile": "${workspaceFolder}/.env",
       "env": {
         "BUN_DEBUG_QUIET_LOGS": "1",
         "BUN_GARBAGE_COLLECTOR_LEVEL": "2",
@@ -508,7 +495,6 @@
       "program": "${workspaceFolder}/build/debug/bun-debug",
       "args": ["install"],
       "cwd": "${fileDirname}",
-      "envFile": "${workspaceFolder}/.env",
       "env": {
         "BUN_DEBUG_QUIET_LOGS": "1",
         "BUN_GARBAGE_COLLECTOR_LEVEL": "2",
@@ -524,7 +510,6 @@
       "program": "node",
       "args": ["test/runner.node.mjs"],
       "cwd": "${workspaceFolder}",
-      "envFile": "${workspaceFolder}/.env",
       "env": {
         "BUN_DEBUG_QUIET_LOGS": "1",
         "BUN_GARBAGE_COLLECTOR_LEVEL": "2",
@@ -762,6 +747,10 @@
       "environment": [
         {
           "name": "BUN_DEBUG_QUIET_LOGS",
+          "value": "1",
+        },
+        {
+          "name": "BUN_DEBUG_SYS",
           "value": "1",
         },
         {

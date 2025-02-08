@@ -8,11 +8,17 @@ const getSignErrorCodeAndMessage = @import("./error.zig").getSignErrorCodeAndMes
 const S3Credentials = @import("./credentials.zig").S3Credentials;
 const picohttp = bun.picohttp;
 const ACL = @import("./acl.zig").ACL;
+const StorageClass = @import("./storage_class.zig").StorageClass;
+
 pub const S3StatResult = union(enum) {
     success: struct {
         size: usize = 0,
         /// etag is not owned and need to be copied if used after this callback
         etag: []const u8 = "",
+        /// format: Mon, 06 Jan 2025 22:40:57 GMT, lastModified is not owned and need to be copied if used after this callback
+        lastModified: []const u8 = "",
+        /// format: text/plain, contentType is not owned and need to be copied if used after this callback
+        contentType: []const u8 = "",
     },
     not_found: S3Error,
 
@@ -222,6 +228,8 @@ pub const S3HttpSimpleTask = struct {
                         callback(.{
                             .success = .{
                                 .etag = response.headers.get("etag") orelse "",
+                                .lastModified = response.headers.get("last-modified") orelse "",
+                                .contentType = response.headers.get("content-type") orelse "",
                                 .size = if (response.headers.get("content-length")) |content_len| (std.fmt.parseInt(usize, content_len, 10) catch 0) else 0,
                             },
                         }, this.callback_context);
@@ -327,6 +335,7 @@ pub const S3SimpleRequestOptions = struct {
     proxy_url: ?[]const u8 = null,
     range: ?[]const u8 = null,
     acl: ?ACL = null,
+    storage_class: ?StorageClass = null,
 };
 
 pub fn executeSimpleS3Request(
@@ -341,6 +350,7 @@ pub fn executeSimpleS3Request(
         .search_params = options.search_params,
         .content_disposition = options.content_disposition,
         .acl = options.acl,
+        .storage_class = options.storage_class,
     }, null) catch |sign_err| {
         if (options.range) |range_| bun.default_allocator.free(range_);
         const error_code_and_message = getSignErrorCodeAndMessage(sign_err);

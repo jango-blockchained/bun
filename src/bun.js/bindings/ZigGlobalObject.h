@@ -53,6 +53,7 @@ class GlobalInternals;
 #include "BunCommonStrings.h"
 #include "BunHttp2CommonStrings.h"
 #include "BunGlobalScope.h"
+#include <js_native_api.h>
 
 namespace WebCore {
 class WorkerGlobalScope;
@@ -72,8 +73,8 @@ namespace Zig {
 
 class JSCStackTrace;
 
-using JSDOMStructureMap = HashMap<const JSC::ClassInfo*, JSC::WriteBarrier<JSC::Structure>>;
-using DOMGuardedObjectSet = HashSet<WebCore::DOMGuardedObject*>;
+using JSDOMStructureMap = UncheckedKeyHashMap<const JSC::ClassInfo*, JSC::WriteBarrier<JSC::Structure>>;
+using DOMGuardedObjectSet = UncheckedKeyHashSet<WebCore::DOMGuardedObject*>;
 
 #define ZIG_GLOBAL_OBJECT_DEFINED
 
@@ -247,6 +248,7 @@ public:
     JSObject* requireResolveFunctionUnbound() const { return m_requireResolveFunctionUnbound.getInitializedOnMainThread(this); }
     Bun::InternalModuleRegistry* internalModuleRegistry() const { return m_internalModuleRegistry.getInitializedOnMainThread(this); }
 
+    JSObject* processBindingBuffer() const { return m_processBindingBuffer.getInitializedOnMainThread(this); }
     JSObject* processBindingConstants() const { return m_processBindingConstants.getInitializedOnMainThread(this); }
 
     JSObject* lazyRequireCacheObject() const { return m_lazyRequireCacheObject.getInitializedOnMainThread(this); }
@@ -310,6 +312,8 @@ public:
     void resetOnEachMicrotaskTick();
 
     enum class PromiseFunctions : uint8_t {
+        BunServe__Plugins__onResolve,
+        BunServe__Plugins__onReject,
         Bun__HTTPRequestContext__onReject,
         Bun__HTTPRequestContext__onRejectStream,
         Bun__HTTPRequestContext__onResolve,
@@ -341,7 +345,7 @@ public:
         Bun__FileStreamWrapper__onRejectRequestStream,
         Bun__FileStreamWrapper__onResolveRequestStream,
     };
-    static constexpr size_t promiseFunctionsSize = 30;
+    static constexpr size_t promiseFunctionsSize = 32;
 
     static PromiseFunctions promiseHandlerID(SYSV_ABI EncodedJSValue (*handler)(JSC__JSGlobalObject* arg0, JSC__CallFrame* arg1));
 
@@ -450,7 +454,7 @@ public:
     // This increases the cache hit rate for JSC::VM's SourceProvider cache
     // It also avoids an extra allocation for the SourceProvider
     // The key is a pointer to the source code
-    WTF::HashMap<uintptr_t, Ref<JSC::SourceProvider>> sourceProviderMap;
+    WTF::UncheckedKeyHashMap<uintptr_t, Ref<JSC::SourceProvider>> sourceProviderMap;
     size_t reloadCount = 0;
 
     void reload();
@@ -478,9 +482,11 @@ public:
 
     LazyProperty<JSGlobalObject, JSObject> m_processEnvObject;
 
-    LazyProperty<JSGlobalObject, Structure> m_JSS3BucketStructure;
     LazyProperty<JSGlobalObject, Structure> m_JSS3FileStructure;
     LazyProperty<JSGlobalObject, Structure> m_S3ErrorStructure;
+    JSC::LazyClassStructure m_JSStatsClassStructure;
+    JSC::LazyClassStructure m_JSStatsBigIntClassStructure;
+    JSC::LazyClassStructure m_JSDirentClassStructure;
 
     JSObject* cryptoObject() const { return m_cryptoObject.getInitializedOnMainThread(this); }
     JSObject* JSDOMFileConstructor() const { return m_JSDOMFileConstructor.getInitializedOnMainThread(this); }
@@ -531,6 +537,7 @@ public:
     LazyClassStructure m_callSiteStructure;
     LazyClassStructure m_JSBufferClassStructure;
     LazyClassStructure m_NodeVMScriptClassStructure;
+    LazyClassStructure m_JSX509CertificateClassStructure;
 
     /**
      * WARNING: You must update visitChildrenImpl() if you add a new field.
@@ -573,6 +580,7 @@ public:
     LazyProperty<JSGlobalObject, JSObject> m_requireFunctionUnbound;
     LazyProperty<JSGlobalObject, JSObject> m_requireResolveFunctionUnbound;
     LazyProperty<JSGlobalObject, Bun::InternalModuleRegistry> m_internalModuleRegistry;
+    LazyProperty<JSGlobalObject, JSObject> m_processBindingBuffer;
     LazyProperty<JSGlobalObject, JSObject> m_processBindingConstants;
     LazyProperty<JSGlobalObject, Structure> m_importMetaObjectStructure;
     LazyProperty<JSGlobalObject, Structure> m_asyncBoundFunctionStructure;
@@ -596,6 +604,17 @@ public:
     LazyProperty<JSGlobalObject, CustomGetterSetter> m_lazyStackCustomGetterSetter;
 
     bool hasOverridenModuleResolveFilenameFunction = false;
+
+    // Almost all NAPI functions should set error_code to the status they're returning right before
+    // they return it
+    napi_extended_error_info m_lastNapiErrorInfo = {
+        .error_message = "",
+        // Not currently used by Bun -- always nullptr
+        .engine_reserved = nullptr,
+        // Not currently used by Bun -- always zero
+        .engine_error_code = 0,
+        .error_code = napi_ok,
+    };
 
 private:
     DOMGuardedObjectSet m_guardedObjects WTF_GUARDED_BY_LOCK(m_gcLock);
