@@ -9,7 +9,7 @@
 import type { Config } from "../config.ts";
 import type { CargoBuild, Dependency } from "../source.ts";
 
-const LOLHTML_COMMIT = "77127cd2b8545998756e8d64e36ee2313c4bb312";
+const LOLHTML_COMMIT = "92b690d4757cb97cf42dac8a6d2bc99caf6a1f6e";
 
 /**
  * -Zbuild-std requires an explicit --target even when host == target.
